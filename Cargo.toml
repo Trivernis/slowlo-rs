@@ -9,7 +9,6 @@ edition = "2018"
 [dependencies]
 native-tls = "0.2.7"
 structopt = "0.3.21"
-rand = "0.8.3"
 fakeit = "1.1.1"
 scheduled-thread-pool = "0.2.5"
 num_cpus = "1.13.0"
