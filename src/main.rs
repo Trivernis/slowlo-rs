@@ -50,19 +50,19 @@ fn main() {
 /// Sends Keep-Alive data to the server
 fn keep_alive(pool: Arc<ScheduledThreadPool>, i: usize, address: String, port: u32, https: bool) {
     if let Some(mut stream) = create_connection(&*address, port, https) {
-        println!("Connection {} established.", i);
+        print!("Connection {} established.                          \r", i);
         let pool_clone = Arc::clone(&pool);
 
         pool.execute_at_fixed_rate(
             Duration::from_secs(fakeit::misc::random(5, 10)),
             Duration::from_secs(fakeit::misc::random(5, 10)),
             move || {
-                println!(r#"Sending "Keep-Alive-Header" for connection {}..."#, i);
+                print!("Sending Keep-Alive-Header for connection {}...\r", i);
 
-                if let Err(_) = stream.write_all(&[fakeit::misc::random(0u8, 255u8)]) {
+                if let Err(e) = stream.write_all(&[fakeit::misc::random(0u8, 255u8)]) {
                     let address = address.clone();
                     let pool_clone2 = Arc::clone(&pool_clone);
-                    println!("Connection {} lost. Reestablishing...", i);
+                    println!("Connection {} lost: {}. Reestablishing...", i, e);
 
                     pool_clone.execute(move || {
                         keep_alive(pool_clone2, i, address, port, https);
